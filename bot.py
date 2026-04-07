@@ -22,6 +22,7 @@ REQUIRED_CHANNELS = [
     {"id": -1003596418374, "name": "SAT Prep | The Duo SAT Hub", "url": "https://t.me/DigitalSAT_Math"},
     {"id": -1001232048732, "name": "Mirfayzbek Abdullayev", "url": "https://t.me/Mirfayzbek_blog"},
     {"id": -1002040788383, "name": "Bolalar tashkiloti ⎸Qashqadaryo", "url": "https://t.me/Bolalar_Qashqadaryo"}
+    {"id": -1003334879516, "name": "M&A SAT prep (cooking SAT in may )", "url": "https://t.me/MASATiseasy"}
 ]
 
 logging.basicConfig(level=logging.INFO)
