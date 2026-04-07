@@ -21,7 +21,7 @@ PRIVATE_CHANNEL_ID = -1003887821245
 REQUIRED_CHANNELS = [
     {"id": -1003596418374, "name": "SAT Prep | The Duo SAT Hub", "url": "https://t.me/DigitalSAT_Math"},
     {"id": -1001232048732, "name": "Mirfayzbek Abdullayev", "url": "https://t.me/Mirfayzbek_blog"},
-    {"id": -1002040788383, "name": "Bolalar tashkiloti ⎸Qashqadaryo", "url": "https://t.me/Bolalar_Qashqadaryo"}
+    {"id": -1002040788383, "name": "Bolalar tashkiloti ⎸Qashqadaryo", "url": "https://t.me/Bolalar_Qashqadaryo"}, # Vergul to'g'irlandi
     {"id": -1003334879516, "name": "M&A SAT prep (cooking SAT in may )", "url": "https://t.me/MASATiseasy"}
 ]
 
@@ -84,7 +84,7 @@ async def on_chat_member_update(event: ChatMemberUpdated):
             
             if row:
                 current_score, ref_by = row
-                # Foydalanuvchini o'zini jazolash (ballini 0 ga tushirish yoki kamaytirish)
+                # Foydalanuvchini o'zini jazolash
                 await db.execute("UPDATE users SET score = max(0, score - 1) WHERE user_id=?", (user_id,))
                 
                 # Taklif qilgan odamdan ball ayirish
@@ -127,7 +127,6 @@ async def start_cmd(msg: Message):
             await db.execute("INSERT INTO users (user_id, name, username, ref_by, score) VALUES(?,?,?,?,?)", 
                              (user_id, name, username, ref_id, 0))
             if ref_id and ref_id != user_id:
-                # FAQAT obuna bo'lgan bo'lsagina ball berish (ixtiyoriy, lekin mantiqan to'g'ri)
                 await db.execute("UPDATE users SET score = score + 1 WHERE user_id=?", (ref_id,))
                 try:
                     await bot.send_message(ref_id, f"🔔 Yangi do'st qo'shildi! Sizga <b>+1 ball</b> berildi.")
@@ -281,7 +280,6 @@ async def main():
     await create_db()
     await bot.delete_webhook(drop_pending_updates=True)
     print("Bot muvaffaqiyatli ishga tushdi... 🚀")
-    # chat_member update turini qabul qilish shart!
     await dp.start_polling(bot, allowed_updates=["message", "callback_query", "chat_member"])
 
 if __name__ == "__main__":
