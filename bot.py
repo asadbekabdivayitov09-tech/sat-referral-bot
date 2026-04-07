@@ -3,7 +3,7 @@ import aiosqlite
 import logging
 import io
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, BufferedInputFile
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, BufferedInputFile, ChatMemberUpdated
 from aiogram.filters import CommandStart, Command
 from aiogram.enums import ChatMemberStatus
 from aiogram.fsm.context import FSMContext
@@ -46,7 +46,7 @@ async def create_db():
         """)
         await db.commit()
 
-# ================= KANALNI TEKSHIRISH VA JAZO =================
+# ================= KANALNI TEKSHIRISH FUNKSIYASI =================
 async def check_and_update_score(user_id, full_name):
     unsubscribed_count = 0 
     for channel in REQUIRED_CHANNELS:
@@ -58,32 +58,45 @@ async def check_and_update_score(user_id, full_name):
             unsubscribed_count += 1
 
     async with aiosqlite.connect("db.sqlite3") as db:
-        cur = await db.execute("SELECT score, ref_by FROM users WHERE user_id=?", (user_id,))
+        cur = await db.execute("SELECT score FROM users WHERE user_id=?", (user_id,))
         row = await cur.fetchone()
         current_score = row[0] if row else 0
-        ref_by = row[1] if row else None
-        
-        if unsubscribed_count > 0:
-            new_score = max(0, current_score - unsubscribed_count)
-            if new_score != current_score:
-                await db.execute("UPDATE users SET score = ? WHERE user_id=?", (new_score, user_id))
-                
-                # JAZO: Taklif qilgan odamga xabar yuborish
-                if ref_by:
-                    try:
-                        await bot.send_message(
-                            ref_by, 
-                            f"⚠️ <b>{full_name}</b> kanaldan chiqib ketgani sababli sizdan {unsubscribed_count} ball ayirildi!"
-                        )
-                        await db.execute("UPDATE users SET score = max(0, score - ?) WHERE user_id=?", (unsubscribed_count, ref_by))
-                    except:
-                        pass
-                
-                await db.commit()
-                current_score = new_score
             
     is_all_subbed = (unsubscribed_count == 0)
     return is_all_subbed, current_score
+
+# ================= KANALNI TARK ETGANLARNI NAZORAT QILISH =================
+@dp.chat_member()
+async def on_chat_member_update(event: ChatMemberUpdated):
+    channel_ids = [ch['id'] for ch in REQUIRED_CHANNELS]
+    if event.chat.id not in channel_ids:
+        return
+
+    # Agar foydalanuvchi kanaldan chiqib ketsa
+    if event.new_chat_member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
+        user_id = event.from_user.id
+        full_name = event.from_user.full_name
+
+        async with aiosqlite.connect("db.sqlite3") as db:
+            cur = await db.execute("SELECT score, ref_by FROM users WHERE user_id=?", (user_id,))
+            row = await cur.fetchone()
+            
+            if row:
+                current_score, ref_by = row
+                # Foydalanuvchini o'zini jazolash (ballini 0 ga tushirish yoki kamaytirish)
+                await db.execute("UPDATE users SET score = max(0, score - 1) WHERE user_id=?", (user_id,))
+                
+                # Taklif qilgan odamdan ball ayirish
+                if ref_by:
+                    await db.execute("UPDATE users SET score = max(0, score - 1) WHERE user_id=?", (ref_by,))
+                    try:
+                        await bot.send_message(
+                            ref_by, 
+                            f"⚠️ <b>{full_name}</b> kanaldan chiqib ketgani sababli sizdan <b>1 ball</b> ayirildi!"
+                        )
+                    except:
+                        pass
+                await db.commit()
 
 # ================= START =================
 @dp.message(CommandStart())
@@ -113,6 +126,7 @@ async def start_cmd(msg: Message):
             await db.execute("INSERT INTO users (user_id, name, username, ref_by, score) VALUES(?,?,?,?,?)", 
                              (user_id, name, username, ref_id, 0))
             if ref_id and ref_id != user_id:
+                # FAQAT obuna bo'lgan bo'lsagina ball berish (ixtiyoriy, lekin mantiqan to'g'ri)
                 await db.execute("UPDATE users SET score = score + 1 WHERE user_id=?", (ref_id,))
                 try:
                     await bot.send_message(ref_id, f"🔔 Yangi do'st qo'shildi! Sizga <b>+1 ball</b> berildi.")
@@ -170,6 +184,10 @@ async def get_ref(call: CallbackQuery):
 @dp.callback_query(F.data == "my_score")
 async def my_score(call: CallbackQuery):
     is_sub, score = await check_and_update_score(call.from_user.id, call.from_user.full_name)
+    if not is_sub:
+         await call.answer(f"❌ Obuna to'liq emas!", show_alert=True)
+         return
+
     if score >= 3:
         try:
             invite = await bot.create_chat_invite_link(PRIVATE_CHANNEL_ID, member_limit=1)
@@ -262,7 +280,8 @@ async def main():
     await create_db()
     await bot.delete_webhook(drop_pending_updates=True)
     print("Bot muvaffaqiyatli ishga tushdi... 🚀")
-    await dp.start_polling(bot)
+    # chat_member update turini qabul qilish shart!
+    await dp.start_polling(bot, allowed_updates=["message", "callback_query", "chat_member"])
 
 if __name__ == "__main__":
     try:
