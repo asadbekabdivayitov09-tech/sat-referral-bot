@@ -21,7 +21,7 @@ PRIVATE_CHANNEL_ID = -1003887821245
 REQUIRED_CHANNELS = [
     {"id": -1003596418374, "name": "SAT Prep | The Duo SAT Hub", "url": "https://t.me/DigitalSAT_Math"},
     {"id": -1001232048732, "name": "Mirfayzbek Abdullayev", "url": "https://t.me/Mirfayzbek_blog"},
-    {"id": -1002040788383, "name": "Bolalar tashkiloti ⎸Qashqadaryo", "url": "https://t.me/Bolalar_Qashqadaryo"}, # Vergul to'g'irlandi
+    {"id": -1002040788383, "name": "Bolalar tashkiloti ⎸Qashqadaryo", "url": "https://t.me/Bolalar_Qashqadaryo"},
     {"id": -1003334879516, "name": "M&A SAT prep (cooking SAT in may )", "url": "https://t.me/MASATiseasy"}
 ]
 
@@ -47,57 +47,61 @@ async def create_db():
         """)
         await db.commit()
 
-# ================= KANALNI TEKSHIRISH FUNKSIYASI =================
-async def check_and_update_score(user_id, full_name):
-    unsubscribed_count = 0 
+# ================= KANALNI TEKSHIRISH =================
+async def is_subscribed(user_id):
     for channel in REQUIRED_CHANNELS:
         try:
             member = await bot.get_chat_member(chat_id=channel["id"], user_id=user_id)
             if member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
-                unsubscribed_count += 1
+                return False
         except:
-            unsubscribed_count += 1
+            return False
+    return True
 
-    async with aiosqlite.connect("db.sqlite3") as db:
-        cur = await db.execute("SELECT score FROM users WHERE user_id=?", (user_id,))
-        row = await cur.fetchone()
-        current_score = row[0] if row else 0
-            
-    is_all_subbed = (unsubscribed_count == 0)
-    return is_all_subbed, current_score
-
-# ================= KANALNI TARK ETGANLARNI NAZORAT QILISH =================
+# ================= KANALNI TARK ETISH VA QAYTA KIRISH =================
 @dp.chat_member()
 async def on_chat_member_update(event: ChatMemberUpdated):
     channel_ids = [ch['id'] for ch in REQUIRED_CHANNELS]
     if event.chat.id not in channel_ids:
         return
 
-    # Agar foydalanuvchi kanaldan chiqib ketsa
-    if event.new_chat_member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
-        user_id = event.from_user.id
-        full_name = event.from_user.full_name
+    user_id = event.from_user.id
+    full_name = event.from_user.full_name
 
-        async with aiosqlite.connect("db.sqlite3") as db:
-            cur = await db.execute("SELECT score, ref_by FROM users WHERE user_id=?", (user_id,))
-            row = await cur.fetchone()
-            
-            if row:
-                current_score, ref_by = row
-                # Foydalanuvchini o'zini jazolash
-                await db.execute("UPDATE users SET score = max(0, score - 1) WHERE user_id=?", (user_id,))
-                
-                # Taklif qilgan odamdan ball ayirish
+    async with aiosqlite.connect("db.sqlite3") as db:
+        cur = await db.execute("SELECT score, ref_by FROM users WHERE user_id=?", (user_id,))
+        row = await cur.fetchone()
+        if not row: return
+        
+        current_score, ref_by = row
+
+        # CHIQIB KETSA: Ball ayirish
+        if event.new_chat_member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
+            await db.execute("UPDATE users SET score = max(0, score - 1) WHERE user_id=?", (user_id,))
+            if ref_by:
+                await db.execute("UPDATE users SET score = max(0, score - 1) WHERE user_id=?", (ref_by,))
+                try:
+                    await bot.send_message(ref_by, f"⚠️ <b>{full_name}</b> kanaldan chiqib ketgani sababli sizdan <b>1 ball</b> ayirildi!")
+                except: pass
+
+        # QAYTA QO'SHILSA: Ballni qaytarish
+        elif event.new_chat_member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
+            # Faqat avvalgi status "left" yoki "kicked" bo'lsa ball qo'shiladi
+            if event.old_chat_member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
+                await db.execute("UPDATE users SET score = score + 1 WHERE user_id=?", (user_id,))
                 if ref_by:
-                    await db.execute("UPDATE users SET score = max(0, score - 1) WHERE user_id=?", (ref_by,))
+                    await db.execute("UPDATE users SET score = score + 1 WHERE user_id=?", (ref_by,))
                     try:
-                        await bot.send_message(
-                            ref_by, 
-                            f"⚠️ <b>{full_name}</b> kanaldan chiqib ketgani sababli sizdan <b>1 ball</b> ayirildi!"
-                        )
-                    except:
-                        pass
-                await db.commit()
+                        await bot.send_message(ref_by, f"✅ <b>{full_name}</b> kanalga qayta qo'shildi! <b>1 ball</b> qaytarildi.")
+                        # 3 ball bo'lganini tekshirish
+                        cur = await db.execute("SELECT score FROM users WHERE user_id=?", (ref_by,))
+                        new_score = (await cur.fetchone())[0]
+                        if new_score == 3:
+                            invite = await bot.create_chat_invite_link(PRIVATE_CHANNEL_ID, member_limit=1)
+                            await bot.send_message(ref_by, f"🎉 Tabriklaymiz! Ballaringiz 3 taga yetdi.\nMaxfiy kanal havolasi: {invite.invite_link}")
+                    except: pass
+        
+        await db.commit()
 
 # ================= START =================
 @dp.message(CommandStart())
@@ -109,16 +113,6 @@ async def start_cmd(msg: Message):
     args = msg.text.split()
     ref_id = int(args[1]) if len(args) > 1 and args[1].isdigit() else None
 
-    # Obunani tekshirish
-    unsub_count = 0
-    for channel in REQUIRED_CHANNELS:
-        try:
-            member = await bot.get_chat_member(channel["id"], user_id)
-            if member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
-                unsub_count += 1
-        except:
-            unsub_count += 1
-
     async with aiosqlite.connect("db.sqlite3") as db:
         cur = await db.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
         user = await cur.fetchone()
@@ -129,7 +123,13 @@ async def start_cmd(msg: Message):
             if ref_id and ref_id != user_id:
                 await db.execute("UPDATE users SET score = score + 1 WHERE user_id=?", (ref_id,))
                 try:
+                    cur = await db.execute("SELECT score FROM users WHERE user_id=?", (ref_id,))
+                    ref_score = (await cur.fetchone())[0]
                     await bot.send_message(ref_id, f"🔔 Yangi do'st qo'shildi! Sizga <b>+1 ball</b> berildi.")
+                    
+                    if ref_score == 3:
+                        invite = await bot.create_chat_invite_link(PRIVATE_CHANNEL_ID, member_limit=1)
+                        await bot.send_message(ref_id, f"🎉 Tabriklaymiz! 3 ta do'stingizni taklif qildingiz.\nYopiq kanal havolasi: {invite.invite_link}")
                 except: pass
             await db.commit()
         else:
@@ -139,26 +139,20 @@ async def start_cmd(msg: Message):
     buttons = [[InlineKeyboardButton(text=f"📢 {ch['name']}", url=ch['url'])] for ch in REQUIRED_CHANNELS]
     buttons.append([InlineKeyboardButton(text="✅ Men qo‘shildim", callback_data="check_subs")])
     
-    status_msg = ""
-    if unsub_count > 0:
-        status_msg = "<b>Avval Kanallarga to`liq qo`shiling❌</b>\n\n"
-
-    start_text = f"""{status_msg}Assalomu alaykum! Botimizga xush kelibsiz, <b>{name}</b>!
-
-⚡️ <b>SAT Matematika Olimpiadasiga xush kelibsiz!</b> 🏆
-
-Ishtirok etish uchun quyidagi kanallarimizga qo‘shiling.
-Shundan so‘ng "✅ Men qo‘shildim" tugmasini bosing."""
-
+    start_text = f"Assalomu alaykum! Botimizga xush kelibsiz, <b>{name}</b>!\n\n⚡️ <b>SAT Matematika Olimpiadasiga xush kelibsiz!</b> 🏆\n\nIshtirok etish uchun quyidagi kanallarimizga qo‘shiling."
     await msg.answer(start_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 # ================= CALLBACKS =================
 @dp.callback_query(F.data == "check_subs")
 async def check_callback(call: CallbackQuery):
-    is_sub, score = await check_and_update_score(call.from_user.id, call.from_user.full_name)
-    if not is_sub:
-        await call.answer(f"❌ Obuna to'liq emas! Avval Kanallarga to`liq qo`shiling❌", show_alert=True)
+    subbed = await is_subscribed(call.from_user.id)
+    if not subbed:
+        await call.answer("❌ Obuna to'liq emas! Avval hamma kanallarga a'zo bo'ling.", show_alert=True)
         return
+
+    async with aiosqlite.connect("db.sqlite3") as db:
+        cur = await db.execute("SELECT score FROM users WHERE user_id=?", (call.from_user.id,))
+        score = (await cur.fetchone())[0]
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔗 Referal havola", callback_data="get_ref"), 
@@ -166,11 +160,22 @@ async def check_callback(call: CallbackQuery):
         [InlineKeyboardButton(text="🏆 Top-10", callback_data="show_top")]
     ])
 
-    menu_text = f"""✅ Barcha kanallarga a'zo ekansiz! 👏
+    if score >= 3:
+        status_text = f"🎉 Siz allaqachon <b>{score} ball</b> to‘pladingiz! Quyidagi tugma orqali <b>yopiq kanal havolasini</b> oling."
+    else:
+        status_text = f"Har bir muvaffaqiyatli taklif uchun siz <b>+1 ball</b> olasiz. <b>3 ball</b> to‘plagan qatnashchilar loyiha ichiga qabul qilinadi.\n\n📊 Sizning hozirgi ballaringiz: <b>{score}</b>"
 
-Har bir muvaffaqiyatli taklif uchun sizga <b>+1 ball</b> beriladi. <b>3 ball</b> to‘plagan ishtirokchilar olimpiadaga qabul qilinadi.
+    menu_text = f"""Do‘stlaringizni <b>“🏆 SAT MATH OLYMPIAD”</b> ga bepul qatnashishga taklif qiling.
 
-📊 <b>Sizning hozirgi ballaringiz:</b> <b>{score}</b>"""
+Sizga <b>shaxsiy referral havola</b> berildi. Do‘stlaringiz shu havola orqali kirib, barcha talablarni bajarganidan so‘ng, bot sizga <b>yopiq kanal havolasini</b> avtomatik yuboradi.
+
+{status_text}
+
+<b>Sovrin yutish usullari:</b>
+1. SAT MATH OLYMPIAD da g‘olib bo‘lish
+2. Eng ko‘p do‘st taklif qilib <b>Top-3</b> o‘rinni olish
+
+<b>Referral havolangizni olish uchun pastdagi tugmani bosing👇</b>"""
 
     await call.message.answer(menu_text, reply_markup=kb)
     await call.answer()
@@ -178,41 +183,56 @@ Har bir muvaffaqiyatli taklif uchun sizga <b>+1 ball</b> beriladi. <b>3 ball</b>
 @dp.callback_query(F.data == "get_ref")
 async def get_ref(call: CallbackQuery):
     link = f"https://t.me/{BOT_USERNAME}?start={call.from_user.id}"
-    await call.message.answer(f"Sizning referal havolangiz:\n<code>{link}</code>\n\nUni do'stlaringizga tarqating!")
+    text = f"""🏆 <b>SAT MATH OLYMPIAD</b>
+Qanday qatnashish mumkin:
+
+1. Botni ishga tushiring
+2. 3 ta do‘stingizni taklif qiling
+3. Olimpiyada o‘tkaziladigan yopiq kanaliga kirish huquqini oling
+
+<b>Sovrinlar:</b>
+• Masalalarni yechish yoki ko‘proq odam taklif qilish orqali g‘olib bo‘lish mumkin
+• Eng yaxshi qatnashchilar uchun haqiqiy va qimmatbaho sovrinlar
+
+<b>Referral reyting:</b>
+• Eng ko‘p do‘st taklif qilganlar leaderboard ga kiradi va qo‘shimcha mukofotlar oladi
+• Agar taklif qilgan do‘stlaringiz kanaldan chiqib ketsa, ballaringiz kamayadi
+
+Jiddiy tayyorlaning va hozirdan boshlang!
+
+<b>Referal link:</b>
+<code>{link}</code>"""
+    await call.message.answer(text)
     await call.answer()
 
 @dp.callback_query(F.data == "my_score")
 async def my_score(call: CallbackQuery):
-    is_sub, score = await check_and_update_score(call.from_user.id, call.from_user.full_name)
-    if not is_sub:
-         await call.answer(f"❌ Obuna to'liq emas!", show_alert=True)
-         return
+    async with aiosqlite.connect("db.sqlite3") as db:
+        cur = await db.execute("SELECT score FROM users WHERE user_id=?", (call.from_user.id,))
+        score = (await cur.fetchone())[0]
 
     if score >= 3:
         try:
             invite = await bot.create_chat_invite_link(PRIVATE_CHANNEL_ID, member_limit=1)
-            await call.message.answer(f"Tabriklaymiz! Ballaringiz yetarli.\nMaxfiy kanal havolasi: {invite.invite_link}")
+            await call.message.answer(f"✅ Ballaringiz yetarli ({score}/3).\nMaxfiy kanal havolasi: {invite.invite_link}")
         except:
-            await call.message.answer("⚠️ Bot yopiq kanalda admin emas yoki texnik xato.")
+            await call.message.answer("⚠️ Texnik xatolik (Bot admin emas).")
     else:
-        await call.message.answer(f"📊 Sizning ballaringiz: <b>{score}/3</b>\nLinkni olish uchun yana {3-score} ta do'stingizni taklif qiling.")
+        await call.message.answer(f"📊 Sizning ballaringiz: <b>{score}/3</b>\nKirish uchun yana {3-score} ta do'st kerak.")
     await call.answer()
 
 @dp.callback_query(F.data == "show_top")
 async def show_top(call: CallbackQuery):
     async with aiosqlite.connect("db.sqlite3") as db:
-        cur = await db.execute("SELECT name, username, score FROM users ORDER BY score DESC LIMIT 10")
+        cur = await db.execute("SELECT name, score FROM users ORDER BY score DESC LIMIT 10")
         users = await cur.fetchall()
-    
     text = "<b>TOP 10 FOYDALANUVCHILAR:</b>\n\n"
     for i, u in enumerate(users, 1):
-        uname = f" (@{u[1]})" if u[1] else ""
-        text += f"{i}. {u[0]}{uname} — <b>{u[2]}</b> ball\n"
-    
+        text += f"{i}. {u[0]} — <b>{u[1]}</b> ball\n"
     await call.message.answer(text)
     await call.answer()
 
-# ================= ADMIN PANEL =================
+# ================= ADMIN VA BOSHQA FUNKSIYALAR (ESKI KODDAGI KABI) =================
 @dp.message(Command("admin"), F.from_user.id == ADMIN_ID)
 async def admin_panel(msg: Message):
     async with aiosqlite.connect("db.sqlite3") as db:
@@ -220,70 +240,43 @@ async def admin_panel(msg: Message):
         total = (await cur.fetchone())[0]
         cur = await db.execute("SELECT COUNT(*) FROM users WHERE score >= 3")
         completed = (await cur.fetchone())[0]
-
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📢 Reklama yuborish", callback_data="send_ad")],
-        [InlineKeyboardButton(text="📊 Batafsil Excel/Hujjat", callback_data="get_report")]
+        [InlineKeyboardButton(text="📊 Excel Hisobot", callback_data="get_report")]
     ])
-    
-    text = (
-        f"🛡 <b>ADMIN PANEL</b>\n\n"
-        f"👤 Jami foydalanuvchilar: <b>{total}</b>\n"
-        f"✅ Shartni bajarganlar (3+ ball): <b>{completed}</b>"
-    )
-    await msg.answer(text, reply_markup=kb)
+    await msg.answer(f"🛡 <b>ADMIN PANEL</b>\n\nJami: {total}\nShartni bajargan: {completed}", reply_markup=kb)
 
 @dp.callback_query(F.data == "get_report", F.from_user.id == ADMIN_ID)
 async def get_report(call: CallbackQuery):
-    await call.answer("Hisobot tayyorlanmoqda...")
     async with aiosqlite.connect("db.sqlite3") as db:
-        cur = await db.execute("SELECT user_id, name, username, score, ref_by FROM users")
+        cur = await db.execute("SELECT user_id, name, score FROM users")
         rows = await cur.fetchall()
-
-    output = "ID | Ism | Username | Ball | Kim taklif qilgan (ID)\n"
-    output += "-" * 50 + "\n"
-    for r in rows:
-        output += f"{r[0]} | {r[1]} | @{r[2] if r[2] else 'yoq'} | {r[3]} | {r[4] if r[4] else 'Direct'}\n"
-
-    file_content = io.BytesIO(output.encode())
-    await call.message.answer_document(
-        BufferedInputFile(file_content.getvalue(), filename="users_report.txt"),
-        caption="📊 Barcha foydalanuvchilar va takliflar hisoboti."
-    )
+    output = "ID | Ism | Ball\n" + "-"*30 + "\n"
+    for r in rows: output += f"{r[0]} | {r[1]} | {r[2]}\n"
+    await call.message.answer_document(BufferedInputFile(output.encode(), filename="report.txt"))
 
 @dp.callback_query(F.data == "send_ad", F.from_user.id == ADMIN_ID)
 async def start_ad(call: CallbackQuery, state: FSMContext):
-    await call.message.answer("Reklama xabarini yuboring (rasm, matn yoki video):")
+    await call.message.answer("Reklama xabarini yuboring:")
     await state.set_state(AdminStates.waiting_for_ad)
-    await call.answer()
 
 @dp.message(AdminStates.waiting_for_ad, F.from_user.id == ADMIN_ID)
 async def broadcast_ad(msg: Message, state: FSMContext):
     async with aiosqlite.connect("db.sqlite3") as db:
         cur = await db.execute("SELECT user_id FROM users")
         users = await cur.fetchall()
-    
-    count = 0
-    status_msg = await msg.answer("Yuborish boshlandi...")
     for user in users:
         try:
-            await bot.copy_message(chat_id=user[0], from_chat_id=msg.chat.id, message_id=msg.message_id)
-            count += 1
+            await bot.copy_message(user[0], msg.chat.id, msg.message_id)
             await asyncio.sleep(0.05)
         except: pass
-    
-    await status_msg.edit_text(f"✅ Xabar {count} kishiga muvaffaqiyatli yuborildi.")
+    await msg.answer("✅ Yuborildi.")
     await state.clear()
 
-# ================= RUN =================
 async def main():
     await create_db()
     await bot.delete_webhook(drop_pending_updates=True)
-    print("Bot muvaffaqiyatli ishga tushdi... 🚀")
-    await dp.start_polling(bot, allowed_updates=["message", "callback_query", "chat_member"])
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        pass
+    asyncio.run(main())
